@@ -1,0 +1,1027 @@
+---
+title: "Analisi time series finanziaria"
+author: "Ludovico Romani"
+format: html
+editor: visual
+---
+
+# ANALISI TS-FINANZIARIA
+
+Vistra.Co (VST) è un'azienda di produzione e vendità di energia elettrica completamente integrata verticalmente con sede a Irving, Texas. L'azienda nasce nel 2016 (anno di quotazione) in seguito alla ristrutturazione post Chapter 11 della Texas Competitive Eletric Holdings (TCEH).
+
+Si tratta dell'azienda produttrice di energia più grande degli Stati Uniti con una capacità di circa 39GW derivanti da gas naturale, centrali nucleari ed energia solare. Vistra Energy si quota in borsa il 6 ottobre 2016 e da quel momento il prezzo delle azioni è salito circa del 899%.
+
+```{r}
+rm(list = ls())
+#### Librerie
+library(tseries)  
+library(sandwich)
+library(lmtest)
+library(urca)     ## For unit root
+library(rugarch)  ## For GARCH models
+library(FinTS)    ## For ArchTest (download from RForge)
+library(car)
+library(forecast) 
+library(xts)      ## For time stamps
+library(quantmod) ## For downloading data
+library(fBasics)
+#### Funzioni
+source("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\DOC CORSO DA LEZIONI\\TSA-Predict-Student-Functions.R")
+source("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\DOC CORSO DA LEZIONI\\TSA-Finance-Functions.R")
+```
+
+### TS DEI PREZZI
+
+```{r}
+symbol <- "VST"
+##Scarico i dati
+vistra=getSymbols(Symbols = symbol, src = "yahoo", auto.assign = FALSE, from = "2016-10-06")
+# #### Adjust to a data.frame
+colnames(vistra)= gsub(x = colnames(vistra), pattern = paste0(symbol, "."), replacement=" ")
+#Andando a indagare il tipo di oggetto vediamo che si tratta di una xts (eXtensible Time Series), può essere trasformata in dataframe.
+vistra=data.frame(Date = index(vistra), vistra, check.names = FALSE)
+
+# #### Crea file csv con i dati aggiornati al giorno di creazione della TS, nel mio caso il 25 agosto 2025
+file=file.path("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\esame",paste0(symbol, "-17122025.csv"))
+
+write.table(x = vistra, file = file, quote = FALSE, sep = "\t", na = ".",
+row.names = FALSE, col.names = TRUE)
+
+dim(vistra)
+class(vistra)
+head(vistra)
+tail(vistra)
+```
+
+### Carica la time series su R
+
+```{r}
+#### Data
+file.data="C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\esame\\VST-17122025.csv"
+
+#### AGGIUNGO VARIABILI 
+#ccret sono i rendimenti in scala logaritmica ovvero la differenza tra il prezzo di chiusura del giorno e il prezzo di chiusura del giorno precedente aggiustati in scala logaritmica.
+#gkvol indica la variabilità di Garman e Klass
+vistra=read.table(file = file.data, header = TRUE, sep = "\t", 
+  check.names = FALSE, comment.char = "", na.strings = ".")
+
+vistra = data.frame(vistra, 
+  cc.ret = c(NA, diff(log(vistra$Adjusted))), 
+  gkVol = .garmanklass(data = vistra, sd = TRUE),
+  check.names = TRUE)
+ 
+#### Extract period - serve a estrarre una TS più corta se necessario
+
+#METODO PROF - SCARICA TUTTA LA TS FINO AL GIORNO IN CUI STO FACENDO RUN DEL CODICE
+#HO DATA INIZIO MA NON FINE
+#ind=as.Date(x = "2016-10-06") <= as.Date(x = vistra$Date)
+#vistra=vistra[ind, , drop = FALSE]
+
+#METODO MIO - INSERISCO 2 DATE TRA CUI SCARICARE LA TS
+start_date <- as.Date("2020-04-01")
+end_date   <- as.Date("2025-12-17")
+
+# Filtra il dataframe
+vistra=vistra[vistra$Date >= start_date & vistra$Date <= end_date, ]
+
+
+#### Extract variables
+#Uso la scala logaritmica perchè mi permette di valutare meglio le variazioni 
+#giornaliere del prezzo rispetto alla scala aritmetica (variazione relativa) dato che quest'ultima non è additiva
+time=as.Date(x = vistra$Date)
+yc=vistra$Close #prezzi di chiusura
+yclog=log(yc) #scala logaritmica dei prezzi di chiusura
+y=vistra$Adjusted #prezzi di chiusura aggiustati per i dividendi
+ylog=log(y) #scala logaritmica dei prezzi di chiusura aggiustati per i dividendi
+```
+
+### Analisi grafica dei prezzi di Vistra
+
+```{r}
+time=as.Date(x = vistra$Date)
+yc=vistra$Close #prezzi di chiusura
+yclog=log(yc) #scala logaritmica dei prezzi di chiusura
+y=vistra$Adjusted #prezzi di chiusura aggiustati per i dividendi
+ylog=log(y) #scala logaritmica dei prezzi di chiusura aggiustati per i dividendi
+
+#Numero di osservazioni del dataframe
+nobs= dim(vistra)[1]
+
+
+#### Grafici dell'ACF e della PACF
+#Faccio i grafici delle variabili di interesse
+plot(x = time, y = yc,    main = "Close prices Vistra Corp.", xlab = "", ylab = "USD dollars", type = "l")
+plot(x = time, y = yclog, main = "Ln(close prices)", xlab = "", ylab = "", type = "l")
+plot(x = time, y = y,     main = "Adjusted close prices", xlab = "", ylab = "USD dollars", type = "l")
+plot(x = time, y = ylog,  main = "Ln(Adjusted close prices)", xlab = "", ylab = "", type = "l")
+
+```
+
+### Grafici ACF e PACF
+
+Vado ad analizzare i grafici dell'ACF e della PACF dei prezzi.
+
+Nell'ACF si può riscontrare un chiaro decadimento lineare delle autocorrelazioni.
+
+Nel grafico della PACF si riscontra un'unica autocorrelazione parziale significativa pari a 1 per lag h=1. Conseguentemente questa analisi grafica porta a supporre **non stazionarietà della ts dei prezzi**. La deduzione è consona con l'origine della time series dato che si tratta di uno stock di un'azienda quotata in borsa.
+
+Queste caratteristiche sono perfettamente in linea con quello che ci si aspettava dato che uno stock segue tendenzialmente un processo stocastico non stazionario RW (o RW+DRIFT).
+
+```{r}
+#### Serial correlation
+Acf(x = ylog, lag.max = 60, type = "correlation", main = "ACF price", xlab="lag", ylab="ACF di Vistra.Corp")
+Acf(x = ylog, lag.max = 60, type = "partial", main = "PACF price" , xlab="lag", ylab="PACF di Vistra.Corp")
+```
+
+### Di Fonzo-Lisi per valutare la stazionarietà dei prezzi
+
+Per valutare se l'ipotesi di avere una RW (o RW+DRIFT) è corretta applico la procedura Di Fonzo-Lisi per valutare la presenza di unit roots e il tipo di processo stocastico che genera la time series originale dei prezzi.
+
+```{r}
+######### ADF tests using the Di Fonzo-Lisi procedure
+cat("\n-----------------------------------------------------------------
+  Unit root analysis following the Di Fonzo-Lisi procedure\n")
+#(DGP:   RW + drift (+ other possible stationary terms); 
+#Model: AR(1) + Trend (+ other possible stationary terms))
+adf.1 = ur.df(y = ylog, type = "trend", lags = 10, selectlags = "AIC")
+cat("\n-----\nTest1: ADF with trend\n")
+print( summary(adf.1) )
+#Comment: Accept for tau3, Accept for Phi3 -> look at Phi2.
+#Accept for Phi2. According to the procedure, we have now to assume
+#(DGP:   RW; Model: AR(1) + constant (+ other possible stationary terms)) - Sono in casella 2
+
+#DGP: RW; 
+#Model: AR(1) + constant (+ other possible stationary terms))
+adf.2 = ur.df(y = ylog, type = "drift", lags = 10, selectlags = "AIC")
+cat("\n-----\nTest1: ADF with drift\n")
+print( summary(adf.2) )
+```
+
+L'ipotesi tratta dall'analisi grafica dell'ACF e della PACF sembra essere confermata. La time series dei prezzi è generata da un RW.
+
+Mi concentro sul livello 1%
+
+-   tau3= -1.6259 \> -3.96 H0: gamma=0
+
+-   phi2= 3.2908 \< 6.09 H0: gamma=ksi=0
+
+-   phi3= 1.7341 \< 8.27 H0: gamma=ksi=omega=0
+
+accetto tau3, accetto phi2, accetto phi3. Nessuna delle ipotesi nulle viene rifiutata quindi vado in casella 2. Ho UR ma devo vedere se ho DRIFT oppure no.
+
+Mi concentro sul livello 1%
+
+-   tau2= 0.1814 \> -3.43
+
+-   phi1= 3.2131 \< 6.43
+
+accetto tau2, accetto phi1 quindi vado in casella 1.
+
+**La ts dei prezzi dello stock di Vistra è una random walk quindi non ho stazionarietà.**
+
+Data la non stazionarietà della time series originale andremo ad analizzare una time series trasformata derivante dalla time series dei prezzi. Si analizza la time series dei LOG-RETURNS (rendimenti in scala logaritmica).
+
+## TS DEI LOG-RETURNS
+
+Dato che la time series dei prezzi giornalieri non è stazionaria poichè il processo stocastico che la genera è un random walk (RW) abbiamo bisogno di andare ad analizzare una trasformazione stazionaria dei prezzi. Nel nostro caso andiamo ad utilizzare la **time series dei log-returns** (returns= rendimenti = rapporto tra prezzo al tempo t e prezzo al tempo t-1).
+
+Rappresentando in un grafico i rendimenti giornalieri percentuali vediamo che oscilllano intorno allo 0 con alcune eccezioni facilmente riconoscibili nel grafico. I valori outlier sia positivi che negativi visibili nel grafico sono:
+
+27 gen 2025 (-33.22%), 26 feb 2021 (-27.71%), 12 mar 2020 (-20.10%)
+
+20 dic 2024 (+15.35%), 09 apr 2025 (+14.40%), 31 lug 2024 (+13.81%)
+
+Il rendimento medio giornaliero è pari a 0.172% (2 apr 2020) e sembrano esserci periodi con differente variabilità intorno alla media (periodi con alta e bassa volatilità –\> volatility clustering).
+
+```{r}
+#### Percentage log-returns
+yret = xts(x = 100 * vistra$cc.ret, order.by = time)
+yret = yret[-1]
+######## Preliminary analysis
+cat("\n-----------------------------------------------------------------
+  Preliminary analysis of log-returns\n")
+#### Time series
+par(mfrow = c(1,1))
+plot(x = time[-1], y = yret, main = "Daily returns of Vistra Corp.", 
+  xlab = "time", ylab = "log-returns ", type = "l")
+#Guardando il grafico dei log-returns giornalieri(log-rendimenti) vediamo che si muovono in maniera casuale intorno a uno 0, in pratica si distribuiscono quasi come un White Noise (WN).Nel caso di un WN però i valori sono omoschedastici mentre qui questa condizione non è presente.
+```
+
+### ACF e PACF dei log-returns
+
+Eseguo il grafico delle ACF e delle PACF per valutare la stazionarietà dei log-returns.
+
+Andando ad analizzare il grafico delle ACF e delle PACF sembra esserci stazionarietà nonostante alcune autocorrelazioni e autocorrelazioni parziali cadano nella regione di rifiuto.
+
+L'analisi grafica delle autocorrelazioni e autocorrelazioni parziali lascia qualche dubbio sulla stazionarietà; conseguentemente vado a eseguire la procedura Di Fonzo-Lisi per valutare con certezza la presenza di unit roots.
+
+```{r}
+#ACF RENDIMENTI
+Acf(x = yret, lag.max = 100, type = "correlation", main = "ACF log-returns", xlab="lag")
+
+#PACF RENDIMENTI 
+Acf(x = yret, lag.max = 100, type = "partial", main = "PACF of log-returns", ylab="PACF", xlab="lag")
+
+#ACF RENDIMENTI IN VAL.ASSOLUTO 
+Acf(x = abs(yret), lag.max = 100, type = "correlation", main = "ACF of |log- returns|", xlab="lag")
+
+#ACF RENDIMENTI QUADRATI
+Acf(x = yret^2, lag.max = 100, type = "correlation", main = "ACF returns^2 of log-returns", xlab="lag")
+
+#IMPORTANTE: Nel caso dei rendimenti si vede bene la stazionarietà o non stazionarietà all'interno del grafico con i valori assoluti.Questo vale per tutti gli stocks possibili da analizzare.
+```
+
+### Di Fonzo-Lisi per valutare stazionarietà dei log-returns
+
+```{r}
+######### ADF tests using the Di Fonzo-Lisi procedure
+cat("\n-----------------------------------------------------------------
+  Unit root analysis following the Di Fonzo-Lisi procedure\n")
+#(DGP:   RW + drift (+ other possible stationary terms); 
+#Model: AR(1) + Trend (+ other possible stationary terms))
+adf.1 = ur.df(y = yret, type = "trend", lags = 10, selectlags = "AIC")
+cat("\n-----\nTest1: ADF with trend\n")
+print( summary(adf.1) )
+#Comment: Accept for tau3, Accept for Phi3 -> look at Phi2.
+#Accept for Phi2. According to the procedure, we have now to assume
+#(DGP:   RW; Model: AR(1) + constant (+ other possible stationary terms)) - Sono in casella 2
+
+#DGP: RW; 
+#Model: AR(1) + constant (+ other possible stationary terms))
+adf.2 <- ur.df(y = yret, type = "drift", lags = 10, selectlags = "AIC")
+cat("\n-----\nTest1: ADF with drift\n")
+print( summary(adf.2) )
+```
+
+Il risultato del test Di Fonzo-Lisi conferma il sentore derivante dall'analisi grafica dell'ACF e PACF dei log-returns. **La times series dei log-returns risulta stazionaria** come ci si aspetterebbe dalla teoria.
+
+Le statistiche test sono:
+
+1%
+
+-   tau3= -20.9384 \< -3.96 quindi rifiuto H0: gamma=0
+
+-   phi2= 146.1438 \> 6.09 quindi rifiuto H0: gamma=ksi=0
+
+-   phi3= 219.21 \> 8.27 quindi rifiuto H0: gamma=ksi=omega=0
+
+Non ho unit root e quindi ho stazionarietà della time series.
+
+### Grafico della distribuzione non condizionale di yret
+
+Eseguo il grafico della distribuzione non condizionata dei rendimenti e vedo che si distribuiscono intorno alla media 0 ma con code molto più pesanti di una distribuzione normale standard.
+
+Costruisco anche il grafico qq-plot dove si vede che i quantili teorici della normale e i quantili calcolati differiscono significativamente.
+
+Per essere sicuro che non sia una distribuzione normale eseguo il test di Shapiro-Wilk e il test di Jarque-Bera. Entrambi confermano che la **ts dei log-returns non è normale.** Questo risultato è in linea con quello che mi sarei aspettato dato che mi sarei aspettato una distribuzione leptocurtica.
+
+Calcolo anche il valore della curtosi pari a 18.4402 quindi decisamente maggiore di 3 (valore della normale). **La ts dei log returns è leptocurtica.**
+
+```{r}
+#### Unconditional distribution
+#Eseguo il grafico della distribuzione non condizionata dei rendimenti e vedo che la distribuzione si distribuisce intorno alla media 0 ma ha code molto più ampie di una distribuzione normale standard
+hist(scale(yret),xlim = c(-3,3), ylim = c(0,0.7), breaks = 100, freq=FALSE, main = "Unconditional distribution log-Returns", xlab="log-returns", ylab="density")
+curve(dnorm(x, mean = 0, sd = 1), from = -6, to = 6, add = TRUE, col = "red", lwd = 2)
+lines(density(scale(yret)), col = "blue", lwd = 2)
+#Le ampie oscillazioni della volatilità nei pressi di momenti storici con shock 
+#esterni forti creano i valori pesanti sulle code mentre la volatilità contenuta nei momenti di calma provoca l'addensamento intorno alla media
+legend = c("norm", "log-ret")
+col = c("red", "blue")
+legend(x = "topright", y = NULL, legend = legend, border = FALSE, col = col, 
+  lty = 1, text.col = col)
+
+qqnorm(y = scale(yret))
+abline(a = 0, b = 1, col = "red")
+#se fosse normale standard i punti si disporrebbero sulla retta, sembra esserci ipernormalità.
+
+#Applico test Shapiro-Wilk
+vettore_yret=as.vector(yret)
+shapiro.test(vettore_yret)
+#Comment: Rifiuto Ho, la ts dei log-return non è normale.
+
+#Applico test-Jarque-Bera
+cat("\nJarque-Bera statistics on log-returns")
+jarque.bera.test(yret)
+#Comment: Rifiuto Ho, la ts dei log-return non è normale.
+
+library(fBasics)
+curtosi=basicStats(yret)
+curtosi["Kurtosis", ]
+print(curtosi)
+#Comment: Curtosi=18.25687 > 3 quindi la distribuzione dei log-returns è leptocurtica
+```
+
+### Test ARCH per eteroschedasticità
+
+Il test ARCH viene utilizzato per valutare se ci sia la presenza di eteroschedasticità in una time series. Il test esegue una regressione sui residui quadrati rispetto ai residui precedenti fino a un lag scelto da noi.
+
+H0: tutti i parametri dei residui = 0, residui precedenti non influenzano residuo in t
+
+H1: almeno 1 parametro diverso da 0, residui precedenti influenzano residuo in t
+
+```{r}
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on demeaned log-returns\n")
+lag <- c(4, 8, 12, 16)
+at <- mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = yret, demean = TRUE))
+print(at[1:3,])
+```
+
+Il test ARCH risulta significativo per tutti i lag utilizzati.
+
+**La time series dei log-returns mostra** **forte evidenza di eteroschedasticità condizionale**.\
+In altre parole, c’è **volatility clustering**: i periodi di grande volatilità tendono a essere seguiti da altra alta volatilità, e i periodi di bassa volatilità da altra bassa volatilità.
+
+Questo risultato giustifica il passaggio a un modello GARCH (o sue estensioni come EGARCH, GJR-GARCH, T-GARCH, …) per modellare la dinamica della volatilità. Si tratta di un risultato classico delle analisi di time series finanziarie.
+
+## MODELLI GARCH
+
+Siamo adesso nella parte di pura modellazione della time series dei log-returns. Ho confermato l'idea iniziale per cui devo utilizzare un modello della famiglia GARCH. **La parte finanziaria, deve riportare almeno le tabella dei modelli GARCH, GJRGARCH, T-GARCH, IGARCH.**
+
+1.  GARCH(1,1)
+
+2.  GARCH(1,1) + COSTANTE
+
+3.  GARCH(1,1)+ARMA(1,0)
+
+4.  GJR-GARCH(1,1)
+
+5.  T-GARCH(1,1)
+
+6.  I-GARCH(1,1)
+
+Cerca di usare il criterio parsimony + AIC o BIC per la scelta deI miglior modello possibile.
+
+**IMPORTANTE!!!!** Il prof ha spiegato che il creatore di R consiglia di non usare il VT (variance targeting) nel casi di fGARCH quindi neanche lui vuole che si usi per non renderci complesse le analisi.
+
+### GARCH(1,1) - FIT1
+
+---
+Akaike = AIC/T = 4.660261   Bayes = BIC/T = 4.671270    GARCH(1,1)
+---
+
+```{r}
+#sGARCH è il primo tipo di GARCH introdotto ovvero il simple GARCH.
+# "variance.model" = modella la varianza e specifica il tipo di GARCH
+# "mean.model" = modella la presenza o no della media e quindi decide se si tratta di un constant + GARCH (include.mean=TRUE) oppure un GARCH puro (include.mean=FALSE). "distribution.model" = modella la forma dei residui
+
+####
+cat("\n-----------------------------------------------------------------
+  GARCH(1,1) on log-returns\n")
+#GARCH(1,1) - std
+spec1 <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1), 
+    submodel = NULL, external.regressors = NULL, variance.targeting = TRUE), 
+  mean.model = list(armaOrder = c(0, 0), include.mean = FALSE,  
+    external.regressors = NULL), 
+  distribution.model = "std")
+
+fit1 <- ugarchfit(spec = spec1, data = yret, solver = "solnp")
+## Store the number of parameters
+np1 <- NROW(fit1@fit$coef)
+## Some statistics
+cat( "\nInformation Criteria" )
+print( infocriteria(fit1) )
+cat("\nMatcoef\n")
+print( fit1@fit$matcoef )
+cat("\nRobust matcoef\n")
+print( fit1@fit$robust.matcoef )
+```
+
+#### Leverage tests
+
+Dopo aver testato i vari sGARCH ha senso valutare se c'è un effetto leverage per i residui standardizzati. Empiricamente sappiamo che nei periodi di **bear market la volatilità tende a essere più alta** mentre nei periodi di **bull market la volatilità sembra essere più bassa**.
+
+In pratica ci aspettiamo che rendimenti negativi influenzino la volatilità condizionale più di rendimenti positivi di pari grandezza.
+
+```{r}
+cat("\nSign bias test\n")
+print( signbias(fit1) )
+```
+
+Eseguendo i leverage test sui residui standardizzati del modello non risultano esserci effetti leverage significativi di alcun tipo. Questo significa che **non ci sono evidenze di asimmetria (no leverage effect)** nei residui standardizzati del modello.
+
+### GARCH(1,1)+COSTANTE - FIT2
+
+```         
+Akaike = AIC/T = 4.655039   Bayes = BIC/T = 4.669717    GARCH(1,1)+COST
+```
+
+```{r}
+cat("\n-----------------------------------------------------------------
+  GARCH(1,1)+COSTANTE on log-returns\n")
+spec2=ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1), 
+    submodel = NULL, external.regressors = NULL, variance.targeting = TRUE), 
+  mean.model = list(armaOrder = c(0, 0), include.mean = TRUE,  
+    external.regressors = NULL), 
+  distribution.model = "std")
+
+fit2=ugarchfit(spec = spec2, data = yret, solver = "solnp")
+## Store the number of parameters
+np2=NROW(fit2@fit$coef)
+## Some statistics
+cat( "\nInformation Criteria" )
+print( infocriteria(fit2) )
+cat("\nMatcoef\n")
+print( fit2@fit$matcoef )
+cat("\nRobust matcoef\n")
+print( fit2@fit$robust.matcoef )
+```
+
+#### Leverage tests
+
+```{r}
+cat("\nSign bias test\n")
+print( signbias(fit2) )
+```
+
+Si conferma l'assenza di effetto leverage significativo sui residui standardizzati al quadrato per il modello GARCH(1,1)+COSTANTE.
+
+### GARCH(1,1)+ARMA(1,0) - FIT 3
+
+```         
+Akaike = AIC/T = 4.648597    Bayes = BIC/T = 4.666946  GARCH(1,1)+ARMA(1,0) 
+```
+
+Il modello GARCH(1,1)+ARMA(1,0) sembra essere migliore del modello più classico GARCH(1,1)+ARMA(1,1) basandoci unicamente sui termini AIC/BIC. In realtà più avanti vedremo che le previsioni del modello GARCH(1,1)+ARMA(1,0) sono distorte e quindi non possiamo usare questo modello per i dati in esame. Inoltre tendiamo ad escluderlo per il criterio di parsimonia.
+
+```{r}
+spec3 = ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1), 
+    submodel = NULL, external.regressors = NULL, variance.targeting = TRUE), 
+  mean.model = list(armaOrder = c(1,0), include.mean = TRUE,  
+    external.regressors = NULL), 
+  distribution.model = "std")
+
+fit3=ugarchfit(spec = spec3, data = yret, solver = "solnp")
+## Store the number of parameters
+np3=NROW(fit3@fit$coef)
+## Some statistics
+cat( "\nInformation Criteria" )
+print( infocriteria(fit3) )
+cat("\nMatcoef\n")
+print( fit3@fit$matcoef )
+cat("\nRobust matcoef\n")
+print( fit3@fit$robust.matcoef )
+```
+
+#### Leverage tests
+
+Dopo aver testato i vari sGARCH ha senso valutare se c'è un effetto leverage per i residui standardizzati. Empiricamente sappiamo che nei periodi di bear market la volatilità tende a essere più alta mentre nei periodi di bull market la volatilità sembra essere più bassa.
+
+In pratica ci aspettiamo che rendimenti negativi influenzino la volatilità condizionale più di rendimenti positivi di pari grandezza. Anche qui vediamo come **non ci sia effetto leverage di alcun tipo.**
+
+```{r}
+cat("\nSign bias test\n")
+print( signbias(fit3) )
+```
+
+### GJR - GARCH(1,1) - FIT4
+
+```         
+Akaike = AIC/T = 4.653726   Bayes = BIC/T = 4.672074   GJR-GARCH(1,1) - VT
+```
+
+```{r}
+cat("\nGJR-GARCH(1,1) on log-returns\n")
+spec4=ugarchspec(
+  variance.model = list(model = "gjrGARCH", garchOrder = c(1, 1), 
+    submodel = NULL, external.regressors = NULL, variance.targeting = TRUE), 
+  mean.model = list(armaOrder = c(0, 0), include.mean = TRUE, 
+    external.regressors = NULL), 
+  distribution.model = "std")
+fit4=ugarchfit(spec = spec4, data = yret, solver = "solnp")
+
+#Coefficiente gamma1 viene negativo quindi opposto a  come ci si aspettava dalla teoria.
+
+## Store the number of parameters
+np4=NROW(fit4@fit$coef)
+
+## Some statistics
+cat( "\nInformation Criteria" )
+print( infocriteria(fit4) )
+cat("\nMatcoef\n")
+print( fit4@fit$matcoef )
+cat("\nRobust matcoef\n")
+print( fit4@fit$robust.matcoef )
+```
+
+### TGARCH(1,1) - FIT5
+
+```         
+Akaike = AIC/T = 4.649562   Bayes = BIC/T = 4.667910    T-GARCH(1,1)
+```
+
+Il p-value di gamma1 è borderline significativo al 5% dato che p-value=0.04
+
+```{r}
+spec5=ugarchspec(
+  variance.model = list(model = "fGARCH", garchOrder = c(1, 1), 
+    submodel = "TGARCH", external.regressors = NULL, variance.targeting = TRUE),  
+  mean.model = list(armaOrder = c(0, 0), include.mean = TRUE, 
+    external.regressors = NULL), 
+  distribution.model = "std")
+fit5=ugarchfit(spec = spec5, data = yret, solver = "solnp")
+## Store the number of parameters
+np5=NROW(fit5@fit$coef)
+#### Conversion to the "traditional" GJR form
+fit5c=.fgarch.2.gjr(fit = fit5)
+cat("T-GARCH\n")
+print( infocriteria(fit5) )
+print(fit5c$robust.matcoef)
+
+#Il Q-Q Plot sotto confronta i quantili dei tuoi residui con quelli della distribuzione teorica che hai scelto. Io scelgo sempre la t-student perchè 
+plot(fit5, which = 9, main="QQ- Plot residuals std for T-GARCH(1,1)")
+```
+
+### IGARCH(1,1) - FIT6
+
+```         
+Akaike = AIC/T = 4.6675   Bayes = BIC/T = 4.6785    I-GARCH(1,1)
+```
+
+```{r}
+spec6=ugarchspec(variance.model = list(model = "iGARCH", garchOrder = c(1, 1), 
+  submodel = NULL, external.regressors = NULL, variance.targeting = TRUE),  
+  mean.model = list(armaOrder = c(0, 0), include.mean = TRUE,
+  external.regressors = NULL), distribution.model = "std")
+
+fit6=ugarchfit(spec = spec6, data = yret, solver = "solnp")
+## Store the number of parameters
+np6=NROW(fit6@fit$coef)
+## Some statistics
+cat( "\nInformation Criteria" )
+print( infocriteria(fit6) )
+cat("\nMatcoef\n")
+print( fit6@fit$matcoef )
+cat("\nRobust matcoef\n")
+print( fit6@fit$robust.matcoef )
+
+
+```
+
+## DIAGNOSTICHE PRE-PREVISIONE SUI RESIDUI STANDARDIZZATI
+
+### PERCHE' SCEGLIERE T-GARCH? (CHECKKA CON RELAZIONE GIA' SCRITTA)
+
+XXXXXXXXXXXXXXXXXXXXXXX
+
+Guardando gli **errori di previsione** posso vedere come il **T-GARCH abbia errori di previsione più bassi rispetto a GJR-GARCH e ai sGARCH**. Notiamo che GARCH+ARMA(1,0) è migliore di GARCH+COSTANTE. Inserendo anche il GJR-GARCH si nota che esso si pone al secondo posto subito dopo il T-GARCH.
+
+Eseguendo i confronti tramite **test di Diebold-Mariano** si nota subito come i p-value siano sempre molto bassi quindi mi portano a rifiutare l'ipotesi nulla di uguale capacità predittiva. **Il T-GARCH fornisce previsioni migliori di tutti gli altri modelli con cui è stato messo a confronto.**
+
+Dai **test Mincer-Zarnowitz** posso affermare che **T-GARCH non fornisce previsioni distorte**. Infatti per i modelli sGARCH vado a rifiutare H0 dato che il p-value risulta significativo. Conseguentemente posso affermare che in GARCH(1,1)+COSTANTE e GARCH(1,1)+ARMA(1,0) c'è un bias sistematico che va a influenzare le previsioni.
+
+#### a) Residui standardizzati
+
+```{r}
+fit=fit5
+
+Acf(x = fit5@fit$z,      lag.max = 100, type = "correlation", main = "z")
+Acf(x = abs(fit5@fit$z), lag.max = 100, type = "correlation", main = "|z|")
+Acf(x = fit5@fit$z^2,    lag.max = 100, type = "correlation", main = expression(z^2))
+
+Acf(x = fit5@fit$z,      lag.max = 100, type = "partial", main = "z")
+Acf(x = abs(fit5@fit$z), lag.max = 100, type = "partial", main = "|z|")
+Acf(x = fit5@fit$z^2,    lag.max = 100, type = "partial", main = expression(z^2))
+```
+
+Dall'analisi grafica dell'ACF e della PACF dei residui standardizzati si vede chiaramente come esse si trovino nella regione di accettazione. Conseguentemente sembrano non esserci autocorrelazioni e autocorrelazioni parziali significative quindi è possibile ipotizzare distribuzione WN per i residui standardizzati z.
+
+#### b) **Test Ljung-Box test** sui residui standardizzati e sui residui al quadrato
+
+##### b.1) T-GARCH(1,1)
+
+```{r}
+cat("\n-----------------------------------------------------------------
+  Test di autocorrelazione di Ljung-Box per T-GARCH(1,1)\n")
+
+lag1=np5 + c(1,2,3,4,5)
+
+cat("\nLjung-Box for T-GARCH on standardized residuals z:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit5@fit$z, type = "Ljung-Box", fitdf = np5) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+#cat("\nLjung-Box for T-GARCH on standardized residuals |z|\n")
+#lb1 = mapply(FUN = Box.test, lag = lag1, 
+#  MoreArgs = list(x = abs(fit5@fit$z), type = "Ljung-Box", fitdf = np5) )
+#print(rbind(lag = lag1, lb1[1:3,]))
+
+cat("\nLjung-Box for T-GARCH on standardized residuals z^2:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit5@fit$z^2, type = "Ljung-Box", fitdf = np5) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+```
+
+##### b.2) GJR-GARCH(1,1)
+
+GJR-GARCH(1,1) sembra rimuovere l'autocorrelazione tra i residui in modo migliore rispetto al T-GARCH(1,1)
+
+```{r}
+cat("\nTest di autocorrelazione di Ljung-Box per GJR-GARCH(1,1) \n")
+
+lag1=np4 + c(1,2,3,4,5)
+
+cat("\nLjung-Box on standardized residuals z:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit4@fit$z, type = "Ljung-Box", fitdf = np4
+                  ) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+#cat("\nLjung-Box on standardized residuals |z|\n")
+#lb1 = mapply(FUN = Box.test, lag = lag1, 
+#  MoreArgs = list(x = abs(fit4@fit$z), type = "Ljung-Box", fitdf = np4) )
+#print(rbind(lag = lag1, lb1[1:3,]))
+
+cat("\nLjung-Box on standardized residuals z^2:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit4@fit$z^2, type = "Ljung-Box", fitdf = np4) )
+print(rbind(lag = lag1, lb1[1:3,]))
+```
+
+##### b.3) GARCH(1,1) + COSTANTE
+
+```{r}
+cat("\nTest di autocorrelazione di Ljung-Box per GARCH(1,1)+COSTANTE \n")
+
+lag1=np2 + c(1,2,3,4,5)
+
+cat("\nLjung-Box on standardized residuals z:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit2@fit$z, type = "Ljung-Box", fitdf = np2
+                  ) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+#cat("\nLjung-Box on standardized residuals |z|\n")
+#lb1 = mapply(FUN = Box.test, lag = lag1, 
+#  MoreArgs = list(x = abs(fit2@fit$z), type = "Ljung-Box", fitdf = np2) )
+#print(rbind(lag = lag1, lb1[1:3,]))
+
+cat("\nLjung-Box on standardized residuals z^2:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit2@fit$z^2, type = "Ljung-Box", fitdf = np2) )
+print(rbind(lag = lag1, lb1[1:3,]))
+```
+
+##### b.4) GARCH(1,1) + ARMA(1,0)
+
+```{r}
+cat("\nTest di autocorrelazione di Ljung-Box per GARCH(1,1)+ARMA(1,0) \n")
+
+lag1=np3 + c(1,2,3,4,5)
+
+cat("\nLjung-Box on standardized residuals z:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit3@fit$z, type = "Ljung-Box", fitdf = np3
+                  ) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+#cat("\nLjung-Box on standardized residuals |z|\n")
+#lb1 = mapply(FUN = Box.test, lag = lag1, 
+#  MoreArgs = list(x = abs(fit6@fit$z), type = "Ljung-Box", fitdf = np6) )
+#print(rbind(lag = lag1, lb1[1:3,]))
+
+cat("\nLjung-Box on standardized residuals z^2:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit3@fit$z^2, type = "Ljung-Box", fitdf = np3) )
+print(rbind(lag = lag1, lb1[1:3,]))
+```
+
+##### b.5) I-GARCH(1,1)
+
+```{r}
+cat("\nTest di autocorrelazione di Ljung-Box per I-GARCH(1,1) \n")
+
+lag1=np6 + c(1,2,3,4,5)
+
+cat("\nLjung-Box on standardized residuals z:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit6@fit$z, type = "Ljung-Box", fitdf = np6
+                  ) )
+print(rbind(lag = lag1, lb1[1:3,]))
+
+#cat("\nLjung-Box on standardized residuals |z|\n")
+#lb1 = mapply(FUN = Box.test, lag = lag1, 
+#  MoreArgs = list(x = abs(fit6@fit$z), type = "Ljung-Box", fitdf = np6) )
+#print(rbind(lag = lag1, lb1[1:3,]))
+
+cat("\nLjung-Box on standardized residuals z^2:\n")
+lb1 = mapply(FUN = Box.test, lag = lag1, 
+  MoreArgs = list(x = fit6@fit$z^2, type = "Ljung-Box", fitdf = np6) )
+print(rbind(lag = lag1, lb1[1:3,]))
+```
+
+#### c) Test ARCH
+
+##### c.1) T-GARCH(1,1)
+
+```{r}
+cat("\nARCH test on standardized residuals for T-GARCH(1,1)\n")
+lag = c(4, 8, 12, 16)
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = fit5@fit$z, demean = TRUE))
+print(at[1:3,])
+```
+
+Il test ARCH risulta sempre non significativo e quindi accetto H0 per tutti i lag. Tramite questo risultato posso affermare che HO OMOSCHEDASTICITA' DEI RESIDUI STANDARDIZZATI come mi sarei aspettato dato che ho usato un modello GARCH che va proprio a modellare l'eteroschedasticità. In pratica ho eliminato l'eteroschedasticità.
+
+##### c.2) GJR-GARCH(1,1)
+
+```{r}
+cat("\nARCH test on standardized residuals for GJR-GARCH(1,1)\n")
+lag = c(4, 8, 12, 16)
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = fit4@fit$z, demean = TRUE))
+print(at[1:3,])
+```
+
+Il test ARCH risulta sempre non significativo e quindi accetto H0 per tutti i lag. Tramite questo risultato posso affermare che **HO OMOSCHEDASTICITA'** **DEI RESIDUI STANDARDIZZATI** come mi sarei aspettato dato che ho usato un modello GARCH che va proprio a modellare l'eteroschedasticità. In pratica ho eliminato l'eteroschedasticità. **HO RISULTATI MIGLIORI DEL T-GARCH.**
+
+##### c.3) GARCH(1,1)+COSTANTE
+
+```{r}
+cat("\nARCH test on standardized residuals for GARCH(1,1)+COSTANTE\n")
+lag = c(4, 8, 12, 16)
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = fit2@fit$z, demean = TRUE))
+print(at[1:3,])
+```
+
+##### c.4) GARCH(1,1)+ARMA(1,0)
+
+```{r}
+cat("\nARCH test on standardized residuals for GARCH(1,1)+ARMA\n")
+lag = c(4, 8, 12, 16)
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = fit3@fit$z, demean = TRUE))
+print(at[1:3,])
+```
+
+##### c.5) I-GARCH(1,1)
+
+```{r}
+cat("\nARCH test on standardized residuals for IGARCH(1,1)\n")
+lag = c(4, 8, 12, 16)
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = fit6@fit$z, demean = TRUE))
+print(at[1:3,])
+```
+
+#### d) Stabilità dei parametri
+
+##### d.1) T-GARCH(1,1)
+
+```{r}
+cat("\nStability check (Nyblom test) on T-GARCH\n")
+print( nyblom(fit5) )
+```
+
+Il test di Nyblom mi permette di capire se i parametri sono stabili allo scorrere del tempo.
+
+Nel caso del T-GARCH(1,1) i parametri sono singolarmente stabili al livello 1% (test non significativi al 1% quindi accetto H0). Unico caso da sottolineare è la significatività di beta1 al 10%.
+
+Nel caso del joint test non rifiuto H0 al livello 1% quindi se considero i parametri tutti insieme ho comunque stabilità dei parametri.
+
+**Quindi il T-GARCH HA PARAMETRI STABILI.**
+
+##### d.2) GJR-GARCH(1,1)
+
+```{r}
+cat("\nStability check (Nyblom test) on GJR-GARCH(1,1)\n")
+print( nyblom(fit4) )
+```
+
+Il parametro gamma1 supera la soglia del 10% ma non del 5% quindi ho possibile instabilità di questo parametro.
+
+Inoltre il valore della statistica nel caso di un joint test è significativa al 10% quindi se vado a valutare il livello del 10% ho almeno un parametro non stabile.
+
+**Quindi il GJR-GARCH HA PARAMETRI NON STABILI AL 10%. Questo non è sufficiente per rifiutare il modello ma è interessante sottolineare questa caratteristica.**
+
+##### d.3) I-GARCH(1,1)
+
+```{r}
+cat("\nStability check (Nyblom test) on I-GARCH\n")
+print( nyblom(fit6) )
+```
+
+Nessuno dei parametri del modello è instabile dato che il test di Nyblom è non significativo. **Quindi il IGARCH(1,1) HA PARAMETRI STABILI.**
+
+##### d.4) GARCH(1,1)+COSTANTE
+
+```{r}
+cat("\nStability check (Nyblom test) on GARCH(1,1)+COSTANTE\n")
+print( nyblom(fit2) )
+```
+
+Il joint test è significativo al livello del 5%. **Quindi il GARCH(1,1)+COSTANTE HA PARAMETRI NON STABILI. In questo caso (a differenza del GJR-GARCH) sono propenso all'eliminazione del modello.**
+
+#### e) Distribuzione residui standardizzati
+
+##### e.1) T-GARCH(1,1)
+
+```{r}
+xlim = c(-5, 5) 
+.hist.fit(fit = fit5, xlim = xlim, ylim = c(0,0.55), n = 200, breaks = 100,    
+plot.norm = FALSE, main = "T-GARCH(1,1)") 
+.qqplot.fit(fit = fit5)
+```
+
+##### e.2) GJR-GARCH(1,1)
+
+```{r}
+xlim = c(-5, 5) 
+.hist.fit(fit = fit4, xlim = xlim, ylim = c(0,0.55), n = 200, breaks = 100, plot.norm = FALSE, main = "GJR-GARCH(1,1)") 
+.qqplot.fit(fit = fit4)
+```
+
+```{r}
+cat("\nDistribution for GJR-GARCH(1,1)\n") 
+xlim = c(-5, 5) 
+.hist.fit(fit = fit4, xlim = xlim, ylim = c(0,0.55), n = 200, breaks = 100,    plot.norm = FALSE, main = "GJR-GARCH(1,1)")   
+
+cat("\nDistribution for T-GARCH(1,1)\n") 
+xlim = c(-5, 5) 
+.hist.fit(fit = fit5, xlim = xlim, ylim = c(0,0.55), n = 200, breaks = 100,    plot.norm = FALSE, main = "T-GARCH")  
+.qqplot.fit(fit = fit4) 
+.qqplot.fit(fit = fit5)
+```
+
+#### f) Errori di previsione
+
+##### f.1) Confronto con il modello naive
+
+Per curiosità eseguo un confronto tra le misure di previsione di GARCH(1,1)+COSTANTE, GJR-GARCH, T-GARCH e I-GARCH.
+
+```{r}
+## Details: 
+##  1. Volatility estimates from GARCH are compared with an external benchmark: 
+##    the Garman-Klass volatility, a measure of volatility less noisy than 
+##    squared returns (note that a GARCH, at the end, is a model of squared or 
+##    absolute returns).
+
+volatilita_GK= .garmanklass(data = vistra)
+#### External benchmark
+y = vistra$gkVol[-1] * 100
+
+#### To give an idea
+plot(x = time[-1], y = y, type = "l", main = "Garman-Klass volatility measure", ylab="")
+plot(x = time[-1], y= sqrt(2/pi)*abs(yret), type="l", main="Absolute Returns", ylab="")
+
+#Grafico che serve a vedere come si allinea il nostro modello con il
+#benchmark dato dalla volatilità di Garman-Klass
+plot(x = time[-1], y = y, type = "l", main = "Garman-Klass volatility measure", ylab="")
+lines(x = time[-1], y = fit5@fit$sigma, col = "red")
+```
+
+Guardando le previsioni in-sample (o ex-poste) posso vedere come il T-GARCH fornisce previsioni migliori rispetto a GJR-GARCH e ai sGARCH. Notiamo che GARCH+ARMA(1,0) è migliore di GARCH+COSTANTE. Inserendo anche il GJR-GARCH si nota che esso si pone al secondo posto subito dopo il T-GARCH.
+
+1.  T-GARCH
+
+2.  GJR-GARCH
+
+3.  I-GARCH
+
+4.  GARCH+COSTANTE
+
+```{r}
+# 2. The section below shows IS (in-sample) forecasts, in the sense that the
+##    forecasting period is included in the estimation period. More genuine OOS
+##    (out-of-sample) forecasts should be considered in the comparison
+##   
+################################################################################
+#### Creo un modello naive
+naive.vol = sd(yret)      #naive della volatilità
+naive.var = naive.vol^2   #naive della varianza
+
+#### Misure di errore
+cat("---------------------------------------------------------------------", 
+  "\nError measures\n")
+ErrorMeas <- data.frame(
+  measure = c("Volatility", "Volatility","Volatility", "Volatility","Volatility","Variance", "Variance","Variance","Variance","Variance"), 
+  model = c( "GARCH(1,1)+COSTANTE","GARCH(1,1)+ARMA(1,0)", "GJR-GARCH(1,1)","T-GARCH(1,1)", "IGARCH"), 
+  rbind( 
+    .ErrorMeasures(y = y,     fit = fit2@fit$sigma,     naive = naive.vol), 
+    .ErrorMeasures(y = y,     fit = fit3@fit$sigma,     naive = naive.vol), 
+    .ErrorMeasures(y = y,     fit = fit4@fit$sigma,     naive = naive.vol),
+    .ErrorMeasures(y = y,     fit = fit5@fit$sigma,     naive = naive.vol),
+    .ErrorMeasures(y = y,     fit = fit6@fit$sigma,     naive = naive.vol),
+    .ErrorMeasures(y = y^2,   fit = fit2@fit$sigma^2,   naive = naive.var),
+    .ErrorMeasures(y = y^2,   fit = fit3@fit$sigma^2,   naive = naive.var),
+    .ErrorMeasures(y = y^2,   fit = fit4@fit$sigma^2,   naive = naive.var),
+    .ErrorMeasures(y = y^2,   fit = fit5@fit$sigma^2,   naive = naive.var),
+    .ErrorMeasures(y = y^2,   fit = fit6@fit$sigma^2,   naive = naive.var)) ) 
+print( ErrorMeas )
+
+### Comment: Quando vado a guardare le misure dell'errore di previsione mi 
+### concentro quasi unicamente sulle MISURE SENZA SEGNO quindi il MAE-RMSE-MAPE-RMSPE-ScMAE-ScRMSE
+
+```
+
+##### f.2) Test di Diebold-Mariano
+
+```{r}
+
+#### Diebold-Mariano forecasting comparison
+#Il test Diebold-Mariano serve a valutare tra due modelli quale è il
+#migliore basandosi sulla qualità delle previsioni effettuate.
+#Per confrontare più di due modelli allo stesso tempo dobbiamo 
+#utilizzare il "Model Confidence set".
+#----------------------------------------------------------------------------------
+# T-GARCH VS GARCH(1,1)+COSTANTE
+cat("---------------------------------------------------------------------", 
+  "\nDiebold-Mariano comparison\n\n")
+cat("Volatility\n")
+h = 1
+
+cat("T-GARCH vs GARCH(1,1)+COSTANTE (Absolute Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit2@fit$sigma, h = h, loss = "AE")
+
+cat("T-GARCH vs GARCH(1,1)+COSTANTE (Squared Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit2@fit$sigma, h = h, loss = "SE")
+#----------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------
+# T-GARCH VS I-GARCH
+cat("---------------------------------------------------------------------", 
+  "\nDiebold-Mariano comparison\n\n")
+cat("Volatility\n")
+h = 1
+
+cat("T-GARCH vs IGARCH(1,1) (Absolute Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit6@fit$sigma, h = h, loss = "AE")
+
+cat("T-GARCH vs IGARCH (Squared Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit6@fit$sigma, h = h, loss = "SE")
+#----------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------
+# T-GARCH VS GJR-GARCH
+cat("---------------------------------------------------------------------", 
+  "\nDiebold-Mariano comparison\n\n")
+cat("Volatility\n")
+h = 1
+
+cat("T-GARCH vs GJR-GARCH(1,1) (Absolute Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit4@fit$sigma, h = h, loss = "AE")
+
+cat("T-GARCH vs GJR-GARCH (Squared Error) ->\n")
+.DieboldMariano(y = y, f1 = fit5@fit$sigma, f2 = fit4@fit$sigma, h = h, loss = "SE")
+```
+
+Eseguendo i confronti tramite **test di Diebold-Mariano** si nota subito come i p-value siano sempre molto bassi quindi mi portano a rifiutare l'ipotesi nulla di uguale capacità predittiva. **Il T-GARCH fornisce previsioni migliori di tutti gli altri modelli con cui è stato messo a confronto.**
+
+```{r}
+## Conditional variance 
+cat("Conditional variance\n")
+h = 1
+e1 = y^2 - fit5@fit$sigma^2
+e2 = y^2 - fit4@fit$sigma^2
+.DieboldMariano(e1 = e1, e2 = e2, h = h, power = 1, msg = "T-GARCH VS GJR-GARCH ->")
+```
+
+Il modello T-GARCH ha un errore di previsione della varianza condizionata più basso rispetto al GJR-GARCH.
+
+##### f.3) Diagnostica di Mincer-Zarnowitz
+
+```{r}
+#### Mincer-Zarnowitz forecasting diagnostics
+cat("---------------------------------------------------------------------", 
+  "\nMincer-Zarnowitz\n" )
+k1=.MincerZarnowitz(y = y, fit = fit2@fit$sigma, msg = "GARCH(1,1)+COSTANTE\n")
+k2=.MincerZarnowitz(y = y, fit = fit5@fit$sigma, msg = "T-GARCH\n")
+k3=.MincerZarnowitz(y = y, fit = fit6@fit$sigma, msg = "IGARCH\n")
+k4=.MincerZarnowitz(y = y, fit = fit4@fit$sigma, msg = "GJR-GARCH\n")
+k5=.MincerZarnowitz(y = y, fit = fit3@fit$sigma, msg = "GARCH(1,1)+ARMA(1,0)\n")
+### Comment: Nell'output della funzione si trovano tre diversi tipi di standard error ovvero std error normale (s.e), std error robusto all'eteroscehdasticità (HC s.e) e std error robusti rispetto all'eteroschedasticità e l'autocorrelazione seriale (HAC s.e).
+```
+
+Nei test Mincer-Zarnowitz vado a valutare lo standard error robusto rispetto all'eteroschedasticità e all'autocorrelazione seriale HAC.
+
+Dai test Mincer-Zarnowitz posso affermare che **T-GARCH è l'unico modello che non fornisce previsioni distorte**. Infatti per i modelli sGARCH vado a rifiutare H0 dato che il p-value risulta significativo. Conseguentemente posso affermare che in tutti i modelli in esame tranne T-GARCH(1,1) c'è un bias sistematico che va a influenzare le previsioni.
+
+## PREVISIONI EX-ANTE
+
+```{r}
+H=10
+
+forc1 = ugarchforecast(fitORspec = fit5, n.ahead = H, 
+  data = NULL, out.sample = 0, n.roll = 0)
+## Examine forc1@forecast
+forc1
+
+plot(forc1)
+```
+
+Ottengo così le previsioni sulle due successive settimane rispetto allo stock di Vistra.
+
+"Series" sono le previsioni dei rendimenti mentre "Sigma" è la previsione della volatilità.
+
+```{r}
+J=10
+#altro modo di fare previsioni
+pred3 = .GARCH.predict(object = fit5, n.ahead = J, t = t1, fixed.n.ahead = FALSE)
+pred3
+```
