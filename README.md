@@ -1,4 +1,4 @@
-FORECASTING DI "VISTRA.CORP"
+ANALISI DELLO STOCK "VISTRA.CORP"
 
 Il progetto consiste nell'analisi della serie temporale finanziaria dei rendimenti giornalieri dello stock "Vistra.Co" allo scopo di individuare il modello migliore per descrivere i dati e fare previsioni sui rendimenti futuri dello stock.
 All'interno dell'elaborato vengono analizzati molteplici modelli della famiglia GARCH allo scopo di trovare il miglior modello possibile per eseguire previsioni ex-ante.
